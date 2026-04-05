@@ -196,14 +196,35 @@ The default exchange is `app` with type `topic`. Configure in `.env`:
 
 ```env
 RABBITMQ_EXCHANGE=my-exchange
-RABBITMQ_EXCHANGE_TYPE=topic    # direct, fanout, topic, headers
+RABBITMQ_EXCHANGE_TYPE=topic
 ```
 
-Publish to a different exchange on-the-fly:
+### Exchange types
+
+All four AMQP exchange types are supported with fluent shortcuts:
 
 ```php
-RabbitMQ::to('billing.events')->publish('invoice.paid', $data);
+// Topic (default) — routing key with wildcards (*, #)
+RabbitMQ::publish('orders.created', $data);
+RabbitMQ::topic('events')->publish('user.login', $data);
+
+// Direct — exact routing key match
+RabbitMQ::direct('tasks')->publish('send-email', $data);
+
+// Fanout — broadcast to all bound queues (routing key ignored)
+RabbitMQ::fanout('notifications')->publish('', $data);
+
+// Headers — routed by AMQP headers
+RabbitMQ::headers('matching')->publish('', $data, ['x-match' => 'all', 'type' => 'urgent']);
 ```
+
+You can also use `to()` with an explicit type:
+
+```php
+RabbitMQ::to('my-exchange', 'direct')->publish('key', $data);
+```
+
+Each exchange is declared independently with its own type. You can mix different exchange types in the same application.
 
 ---
 
