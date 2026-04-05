@@ -6,7 +6,11 @@ use Illuminate\Support\Facades\Facade;
 use Maestrodimateo\SimpleRabbitMQ\RabbitMQManager;
 
 /**
- * @method static static to(string $exchange)
+ * @method static static to(string $exchange, string $type = 'topic')
+ * @method static static direct(string $exchange)
+ * @method static static fanout(string $exchange)
+ * @method static static topic(string $exchange)
+ * @method static static headers(string $exchange)
  * @method static void publish(string $routingKey, array $payload = [], array $headers = [])
  * @method static void send(\Maestrodimateo\SimpleRabbitMQ\Messages\RabbitMQMessage $message)
  * @method static void listen(string $routingKey, string $handlerClass)

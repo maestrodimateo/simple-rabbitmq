@@ -33,8 +33,8 @@ class RabbitMQManager
     /** @var array<string> Queues already declared in this process */
     private array $declaredQueues = [];
 
-    /** @var string|null Override exchange for the next publish */
-    private ?string $targetExchange = null;
+    /** @var array|null Override exchange for the next publish { name, type } */
+    private ?array $targetExchange = null;
 
     // =========================================================================
     // Connection (lazy)
@@ -80,16 +80,45 @@ class RabbitMQManager
     /**
      * Set the exchange for the next publish call.
      *
-     *     RabbitMQ::to('my-exchange')->publish('routing.key', $data);
+     *     RabbitMQ::to('my-exchange')->publish('key', $data);
+     *     RabbitMQ::to('my-exchange', 'fanout')->publish('key', $data);
+     *     RabbitMQ::direct('my-exchange')->publish('key', $data);
+     *     RabbitMQ::fanout('my-exchange')->publish('key', $data);
+     *     RabbitMQ::topic('my-exchange')->publish('key', $data);
      *
      * @param  string  $exchange  Exchange name
+     * @param  string  $type  Exchange type (direct, fanout, topic, headers)
      * @return $this
      */
-    public function to(string $exchange): static
+    public function to(string $exchange, string $type = 'topic'): static
     {
-        $this->targetExchange = $exchange;
+        $this->targetExchange = ['name' => $exchange, 'type' => $type];
 
         return $this;
+    }
+
+    /** Shortcut for a direct exchange */
+    public function direct(string $exchange): static
+    {
+        return $this->to($exchange, 'direct');
+    }
+
+    /** Shortcut for a fanout exchange */
+    public function fanout(string $exchange): static
+    {
+        return $this->to($exchange, 'fanout');
+    }
+
+    /** Shortcut for a topic exchange */
+    public function topic(string $exchange): static
+    {
+        return $this->to($exchange, 'topic');
+    }
+
+    /** Shortcut for a headers exchange */
+    public function headers(string $exchange): static
+    {
+        return $this->to($exchange, 'headers');
     }
 
     /**
@@ -103,10 +132,11 @@ class RabbitMQManager
      */
     public function publish(string $routingKey, array $payload = [], array $headers = []): void
     {
-        $exchange = $this->targetExchange ?? config('rabbitmq.exchange.name', 'app');
+        $exchangeName = $this->targetExchange['name'] ?? config('rabbitmq.exchange.name', 'app');
+        $exchangeType = $this->targetExchange['type'] ?? config('rabbitmq.exchange.type', 'topic');
         $this->targetExchange = null;
 
-        $this->ensureExchange($exchange);
+        $this->ensureExchange($exchangeName, $exchangeType);
 
         $properties = [
             'content_type' => 'application/json',
@@ -119,7 +149,7 @@ class RabbitMQManager
 
         $message = new AMQPMessage(json_encode($payload), $properties);
 
-        $this->channel()->basic_publish($message, $exchange, $routingKey);
+        $this->channel()->basic_publish($message, $exchangeName, $routingKey);
     }
 
     /**
@@ -252,14 +282,16 @@ class RabbitMQManager
 
     /**
      * Declare an exchange if not already declared.
+     *
+     * @param  string  $name  Exchange name
+     * @param  string  $type  Exchange type (direct, fanout, topic, headers)
      */
-    private function ensureExchange(string $name): void
+    private function ensureExchange(string $name, string $type = 'topic'): void
     {
         if (in_array($name, $this->declaredExchanges, true)) {
             return;
         }
 
-        $type = config('rabbitmq.exchange.type', 'topic');
         $durable = config('rabbitmq.exchange.durable', true);
 
         $this->channel()->exchange_declare($name, $type, false, $durable, false);
