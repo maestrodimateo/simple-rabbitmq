@@ -1,0 +1,22 @@
+<?php
+
+namespace {{ namespace }};
+
+use Maestrodimateo\SimpleRabbitMQ\Messages\RabbitMQMessage;
+
+class {{ class }} extends RabbitMQMessage
+{
+    public string $routingKey = '{{ routingKey }}';
+
+    public function __construct()
+    {
+        //
+    }
+
+    public function payload(): array
+    {
+        return [
+            //
+        ];
+    }
+}

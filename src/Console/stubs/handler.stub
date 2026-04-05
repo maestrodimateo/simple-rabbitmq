@@ -1,0 +1,17 @@
+<?php
+
+namespace {{ namespace }};
+
+use Maestrodimateo\SimpleRabbitMQ\Contracts\MessageHandler;
+use Maestrodimateo\SimpleRabbitMQ\Messages\IncomingMessage;
+
+class {{ class }} extends MessageHandler
+{
+    public function handle(IncomingMessage $message): void
+    {
+        $data = $message->payload();
+        $routingKey = $message->routingKey();
+
+        // Your processing logic here
+    }
+}
