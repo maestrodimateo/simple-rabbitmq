@@ -11,9 +11,12 @@ class IncomingMessage
 {
     private readonly array $decodedPayload;
 
+    private readonly array $parsedHeaders;
+
     public function __construct(private readonly AMQPMessage $amqpMessage)
     {
         $this->decodedPayload = json_decode($amqpMessage->getBody(), true) ?? [];
+        $this->parsedHeaders = $this->extractHeaders();
     }
 
     /** Get the decoded payload as an array */
@@ -49,21 +52,19 @@ class IncomingMessage
     /** Get a message header */
     public function header(string $key, mixed $default = null): mixed
     {
-        $headers = $this->amqpMessage->get('application_headers')?->getNativeData() ?? [];
-
-        return $headers[$key] ?? $default;
+        return $this->parsedHeaders[$key] ?? $default;
     }
 
     /** Get all headers */
     public function headers(): array
     {
-        return $this->amqpMessage->get('application_headers')?->getNativeData() ?? [];
+        return $this->parsedHeaders;
     }
 
-    /** Get the retry count (from x-death header) */
+    /** Get the retry count (from x-death header set by RabbitMQ on DLX redelivery) */
     public function retryCount(): int
     {
-        $deaths = $this->header('x-death', []);
+        $deaths = $this->parsedHeaders['x-death'] ?? [];
 
         if (empty($deaths)) {
             return 0;
@@ -76,5 +77,20 @@ class IncomingMessage
     public function amqpMessage(): AMQPMessage
     {
         return $this->amqpMessage;
+    }
+
+    /**
+     * Safely extract application headers from the AMQP message.
+     * Returns an empty array if no headers are present (avoids OutOfBoundsException).
+     */
+    private function extractHeaders(): array
+    {
+        if (! $this->amqpMessage->has('application_headers')) {
+            return [];
+        }
+
+        $headers = $this->amqpMessage->get('application_headers');
+
+        return method_exists($headers, 'getNativeData') ? $headers->getNativeData() : [];
     }
 }
