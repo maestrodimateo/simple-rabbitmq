@@ -60,11 +60,7 @@ class RabbitMQManager
     {
         if (! $this->channel || ! $this->channel->is_open()) {
             $this->channel = $this->connection()->channel();
-            $this->channel->basic_qos(
-                prefetchSize: 0,
-                prefetchCount: config('rabbitmq.consumer.prefetch_count', 1),
-                aGlobal: false,
-            );
+            $this->channel->basic_qos(0, config('rabbitmq.consumer.prefetch_count', 1), false);
         }
 
         return $this->channel;
@@ -175,13 +171,8 @@ class RabbitMQManager
         $this->ensureQueueExists($queueName, $exchangeName, $routingKey);
 
         $this->channel()->basic_consume(
-            queue: $queueName,
-            consumerTag: '',
-            noLocal: false,
-            noAck: false,
-            exclusive: false,
-            nowait: false,
-            callback: function (AMQPMessage $amqpMessage) use ($callback) {
+            $queueName, '', false, false, false, false,
+            function (AMQPMessage $amqpMessage) use ($callback) {
                 $incoming = new IncomingMessage($amqpMessage);
 
                 try {
@@ -215,13 +206,8 @@ class RabbitMQManager
             $this->ensureQueueExists($queueName, $exchangeName, $routingKey);
 
             $this->channel()->basic_consume(
-                queue: $queueName,
-                consumerTag: '',
-                noLocal: false,
-                noAck: false,
-                exclusive: false,
-                nowait: false,
-                callback: fn (AMQPMessage $msg) => $this->dispatchToHandler($msg, $handlerClass),
+                $queueName, '', false, false, false, false,
+                fn (AMQPMessage $msg) => $this->dispatchToHandler($msg, $handlerClass),
             );
 
             Log::info("RabbitMQ: listening on [{$queueName}] → {$handlerClass}");
