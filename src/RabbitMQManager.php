@@ -25,7 +25,7 @@ class RabbitMQManager
 
     private ?AMQPChannel $channel = null;
 
-    /** @var array<string, string> Registered listeners: routing_key => handler_class */
+    /** @var array<string, string> Registered listeners: binding_key => handler_class */
     private array $listeners = [];
 
     /** @var array<string> Exchanges already declared in this process */
@@ -144,31 +144,31 @@ class RabbitMQManager
     // =========================================================================
 
     /**
-     * Register a listener for a routing key (called from routes/rabbitmq.php).
+     * Register a listener for a binding key (called from routes/rabbitmq.php).
      *
-     * @param  string  $routingKey  Routing key pattern (supports topic wildcards: *, #)
+     * @param  string  $bindingKey  Binding key pattern (supports topic wildcards: *, #)
      * @param  string  $handlerClass  Fully qualified class name extending MessageHandler
      */
-    public function listen(string $routingKey, string $handlerClass): void
+    public function listen(string $bindingKey, string $handlerClass): void
     {
-        $this->listeners[$routingKey] = $handlerClass;
+        $this->listeners[$bindingKey] = $handlerClass;
     }
 
     /**
-     * Consume messages for a single routing key using a callback.
+     * Consume messages for a single binding key using a callback.
      * Blocks until the channel is closed.
      *
-     * @param  string  $routingKey  Routing key
+     * @param  string  $bindingKey  Binding key pattern (supports topic wildcards: *, #)
      * @param  Closure  $callback  Receives the decoded payload array
      */
-    public function consume(string $routingKey, Closure $callback): void
+    public function consume(string $bindingKey, Closure $callback): void
     {
-        $queueName = $this->toQueueName($routingKey);
+        $queueName = $this->toQueueName($bindingKey);
         $exchangeName = config('rabbitmq.exchange.name', 'app');
         $exchangeType = config('rabbitmq.exchange.type', 'topic');
 
         $this->ensureExchangeExists($exchangeName, $exchangeType);
-        $this->ensureQueueExists($queueName, $exchangeName, $routingKey);
+        $this->ensureQueueExists($queueName, $exchangeName, $bindingKey);
 
         $this->channel()->basic_consume(
             $queueName, '', false, false, false, false,
@@ -201,9 +201,9 @@ class RabbitMQManager
         $exchangeType = config('rabbitmq.exchange.type', 'topic');
         $this->ensureExchangeExists($exchangeName, $exchangeType);
 
-        foreach ($this->listeners as $routingKey => $handlerClass) {
-            $queueName = $this->toQueueName($routingKey);
-            $this->ensureQueueExists($queueName, $exchangeName, $routingKey);
+        foreach ($this->listeners as $bindingKey => $handlerClass) {
+            $queueName = $this->toQueueName($bindingKey);
+            $this->ensureQueueExists($queueName, $exchangeName, $bindingKey);
 
             $this->channel()->basic_consume(
                 $queueName, '', false, false, false, false,
@@ -308,13 +308,13 @@ class RabbitMQManager
     /**
      * Declare a queue, bind it to an exchange, and set up dead-letter routing.
      */
-    private function ensureQueueExists(string $queueName, string $exchange, string $routingKey): void
+    private function ensureQueueExists(string $queueName, string $exchange, string $bindingKey): void
     {
         if (in_array($queueName, $this->declaredQueues, true)) {
             return;
         }
 
-        $arguments = $this->buildQueueArguments($routingKey);
+        $arguments = $this->buildQueueArguments($bindingKey);
         $table = $arguments ? new AMQPTable($arguments) : null;
 
         $this->channel()->queue_declare(
@@ -327,14 +327,14 @@ class RabbitMQManager
             arguments: $table,
         );
 
-        $this->channel()->queue_bind($queueName, $exchange, $routingKey);
+        $this->channel()->queue_bind($queueName, $exchange, $bindingKey);
         $this->declaredQueues[] = $queueName;
     }
 
     /**
      * Build queue arguments including dead-letter routing if enabled.
      */
-    private function buildQueueArguments(string $routingKey): array
+    private function buildQueueArguments(string $bindingKey): array
     {
         if (! config('rabbitmq.dead_letter.enabled', true)) {
             return [];
@@ -343,13 +343,13 @@ class RabbitMQManager
         $dlxExchange = config('rabbitmq.dead_letter.exchange', 'dlx');
 
         // Declare the DLQ
-        $dlqName = $this->toQueueName($routingKey).config('rabbitmq.dead_letter.queue_suffix', '.dlq');
+        $dlqName = $this->toQueueName($bindingKey).config('rabbitmq.dead_letter.queue_suffix', '.dlq');
         $this->channel()->queue_declare($dlqName, false, true, false, false);
-        $this->channel()->queue_bind($dlqName, $dlxExchange, $routingKey);
+        $this->channel()->queue_bind($dlqName, $dlxExchange, $bindingKey);
 
         return [
             'x-dead-letter-exchange' => $dlxExchange,
-            'x-dead-letter-routing-key' => $routingKey,
+            'x-dead-letter-routing-key' => $bindingKey,
         ];
     }
 
@@ -385,15 +385,15 @@ class RabbitMQManager
     }
 
     /**
-     * Convert a routing key to a valid queue name.
+     * Convert a binding key to a valid queue name.
      *
      *   "orders.created" → "orders.created"
      *   "orders.*"       → "orders._star_"
      *   "logs.#"         → "logs._hash_"
      */
-    private function toQueueName(string $routingKey): string
+    private function toQueueName(string $bindingKey): string
     {
-        return str_replace(['*', '#'], ['_star_', '_hash_'], $routingKey);
+        return str_replace(['*', '#'], ['_star_', '_hash_'], $bindingKey);
     }
 
     /**
