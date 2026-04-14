@@ -247,13 +247,16 @@ class RabbitMQManager
     }
 
     /**
-     * Handle a message that failed processing — retry or route to DLQ.
+     * Handle a message that failed processing — log once and route to DLQ.
+     *
+     * Always nacks with requeue: false so the message goes through the DLX.
+     * Using requeue: true would cause infinite redelivery because the x-death
+     * retry counter only increments when the message passes through the DLX.
      */
     private function handleFailedMessage(AMQPMessage $amqpMessage, IncomingMessage $incoming, Throwable $exception): void
     {
         $maxAttempts = config('rabbitmq.retry.max_attempts', 3);
         $currentAttempt = $incoming->retryCount() + 1;
-        $retryEnabled = config('rabbitmq.retry.enabled', true);
 
         Log::warning('RabbitMQ: message processing failed', [
             'routing_key' => $incoming->routingKey(),
@@ -262,8 +265,7 @@ class RabbitMQManager
             'error' => $exception->getMessage(),
         ]);
 
-        $shouldRequeue = $retryEnabled && $currentAttempt < $maxAttempts;
-        $amqpMessage->nack(requeue: $shouldRequeue);
+        $amqpMessage->nack(requeue: false);
     }
 
     // =========================================================================
