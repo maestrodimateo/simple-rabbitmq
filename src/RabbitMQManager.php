@@ -3,6 +3,7 @@
 namespace Maestrodimateo\SimpleRabbitMQ;
 
 use Closure;
+use Exception;
 use Illuminate\Support\Facades\Log;
 use Maestrodimateo\SimpleRabbitMQ\Contracts\MessageHandler;
 use Maestrodimateo\SimpleRabbitMQ\Messages\IncomingMessage;
@@ -28,10 +29,10 @@ class RabbitMQManager
     /** @var array<string, string> Registered listeners: binding_key => handler_class */
     private array $listeners = [];
 
-    /** @var array<string> Exchanges already declared in this process */
+    /** @var array<string, true> Exchanges already declared in this process */
     private array $declaredExchanges = [];
 
-    /** @var array<string> Queues already declared in this process */
+    /** @var array<string, true> Queues already declared in this process */
     private array $declaredQueues = [];
 
     /** @var array{name: string, type: string}|null Override exchange for the next publish */
@@ -41,7 +42,10 @@ class RabbitMQManager
     // Connection (lazy — connects only on first use)
     // =========================================================================
 
-    private function connection(): AMQPStreamConnection
+    /**
+     * @throws Exception
+     */
+    protected function connection(): AMQPStreamConnection
     {
         if (! $this->connection || ! $this->connection->isConnected()) {
             $this->connection = new AMQPStreamConnection(
@@ -56,7 +60,10 @@ class RabbitMQManager
         return $this->connection;
     }
 
-    private function channel(): AMQPChannel
+    /**
+     * @throws Exception
+     */
+    protected function channel(): AMQPChannel
     {
         if (! $this->channel || ! $this->channel->is_open()) {
             $this->channel = $this->connection()->channel();
@@ -110,9 +117,10 @@ class RabbitMQManager
     /**
      * Publish a JSON-encoded message to RabbitMQ.
      *
-     * @param  string  $routingKey  Routing key
-     * @param  array  $payload  Data (will be JSON-encoded)
-     * @param  array  $headers  Optional AMQP headers
+     * @param string $routingKey Routing key
+     * @param array $payload Data (will be JSON-encoded)
+     * @param array $headers Optional AMQP headers
+     * @throws Exception
      */
     public function publish(string $routingKey, array $payload = [], array $headers = []): void
     {
@@ -159,13 +167,13 @@ class RabbitMQManager
      * Blocks until the channel is closed.
      *
      * @param  string  $bindingKey  Binding key pattern (supports topic wildcards: *, #)
-     * @param  Closure  $callback  Receives the decoded payload array
+     * @param  Closure(IncomingMessage): void  $callback  Receives the IncomingMessage
      */
     public function consume(string $bindingKey, Closure $callback): void
     {
-        $queueName = $this->toQueueName($bindingKey);
         $exchangeName = config('rabbitmq.exchange.name', 'app');
         $exchangeType = config('rabbitmq.exchange.type', 'topic');
+        $queueName = $this->toQueueName($bindingKey);
 
         $this->ensureExchangeExists($exchangeName, $exchangeType);
         $this->ensureQueueExists($queueName, $exchangeName, $bindingKey);
@@ -176,14 +184,10 @@ class RabbitMQManager
                 $incoming = new IncomingMessage($amqpMessage);
 
                 try {
-                    $callback($incoming->payload());
+                    $callback($incoming);
                     $amqpMessage->ack();
                 } catch (Throwable $e) {
-                    Log::error('RabbitMQ: callback consumer error', [
-                        'routing_key' => $incoming->routingKey(),
-                        'error' => $e->getMessage(),
-                    ]);
-                    $amqpMessage->nack(requeue: false);
+                    $this->handleFailedMessage($amqpMessage, $incoming, $e);
                 }
             },
         );
@@ -232,7 +236,7 @@ class RabbitMQManager
      * Dispatch a received AMQP message to the appropriate handler.
      * Handles ack on success, retry or DLQ on failure.
      */
-    private function dispatchToHandler(AMQPMessage $amqpMessage, string $handlerClass): void
+    protected function dispatchToHandler(AMQPMessage $amqpMessage, string $handlerClass): void
     {
         $incoming = new IncomingMessage($amqpMessage);
 
@@ -253,7 +257,7 @@ class RabbitMQManager
      * Using requeue: true would cause infinite redelivery because the x-death
      * retry counter only increments when the message passes through the DLX.
      */
-    private function handleFailedMessage(AMQPMessage $amqpMessage, IncomingMessage $incoming, Throwable $exception): void
+    protected function handleFailedMessage(AMQPMessage $amqpMessage, IncomingMessage $incoming, Throwable $exception): void
     {
         $maxAttempts = config('rabbitmq.retry.max_attempts', 3);
         $currentAttempt = $incoming->retryCount() + 1;
@@ -275,15 +279,15 @@ class RabbitMQManager
     /**
      * Declare an exchange if not already declared in this process.
      */
-    private function ensureExchangeExists(string $name, string $type = 'topic'): void
+    protected function ensureExchangeExists(string $name, string $type = 'topic'): void
     {
-        if (in_array($name, $this->declaredExchanges, true)) {
+        if (isset($this->declaredExchanges[$name])) {
             return;
         }
 
         $durable = config('rabbitmq.exchange.durable', true);
         $this->channel()->exchange_declare($name, $type, false, $durable, false);
-        $this->declaredExchanges[] = $name;
+        $this->declaredExchanges[$name] = true;
 
         $this->ensureDeadLetterExchangeExists();
     }
@@ -291,7 +295,7 @@ class RabbitMQManager
     /**
      * Declare the dead-letter exchange if DLX is enabled.
      */
-    private function ensureDeadLetterExchangeExists(): void
+    protected function ensureDeadLetterExchangeExists(): void
     {
         if (! config('rabbitmq.dead_letter.enabled', true)) {
             return;
@@ -299,20 +303,20 @@ class RabbitMQManager
 
         $dlxName = config('rabbitmq.dead_letter.exchange', 'dlx');
 
-        if (in_array($dlxName, $this->declaredExchanges, true)) {
+        if (isset($this->declaredExchanges[$dlxName])) {
             return;
         }
 
         $this->channel()->exchange_declare($dlxName, 'topic', false, true, false);
-        $this->declaredExchanges[] = $dlxName;
+        $this->declaredExchanges[$dlxName] = true;
     }
 
     /**
      * Declare a queue, bind it to an exchange, and set up dead-letter routing.
      */
-    private function ensureQueueExists(string $queueName, string $exchange, string $bindingKey): void
+    protected function ensureQueueExists(string $queueName, string $exchange, string $bindingKey): void
     {
-        if (in_array($queueName, $this->declaredQueues, true)) {
+        if (isset($this->declaredQueues[$queueName])) {
             return;
         }
 
@@ -330,24 +334,27 @@ class RabbitMQManager
         );
 
         $this->channel()->queue_bind($queueName, $exchange, $bindingKey);
-        $this->declaredQueues[] = $queueName;
+        $this->declaredQueues[$queueName] = true;
     }
 
     /**
      * Build queue arguments including dead-letter routing if enabled.
      */
-    private function buildQueueArguments(string $bindingKey): array
+    protected function buildQueueArguments(string $bindingKey): array
     {
         if (! config('rabbitmq.dead_letter.enabled', true)) {
             return [];
         }
 
         $dlxExchange = config('rabbitmq.dead_letter.exchange', 'dlx');
-
-        // Declare the DLQ
         $dlqName = $this->toQueueName($bindingKey).config('rabbitmq.dead_letter.queue_suffix', '.dlq');
-        $this->channel()->queue_declare($dlqName, false, true, false, false);
-        $this->channel()->queue_bind($dlqName, $dlxExchange, $bindingKey);
+
+        // Declare and bind the DLQ only once
+        if (! isset($this->declaredQueues[$dlqName])) {
+            $this->channel()->queue_declare($dlqName, false, true, false, false);
+            $this->channel()->queue_bind($dlqName, $dlxExchange, $bindingKey);
+            $this->declaredQueues[$dlqName] = true;
+        }
 
         return [
             'x-dead-letter-exchange' => $dlxExchange,
@@ -362,7 +369,7 @@ class RabbitMQManager
     /**
      * Build a persistent JSON AMQP message with optional headers.
      */
-    private function buildAmqpMessage(array $payload, array $headers = []): AMQPMessage
+    protected function buildAmqpMessage(array $payload, array $headers = []): AMQPMessage
     {
         $properties = [
             'content_type' => 'application/json',
@@ -373,13 +380,13 @@ class RabbitMQManager
             $properties['application_headers'] = new AMQPTable($headers);
         }
 
-        return new AMQPMessage(json_encode($payload), $properties);
+        return new AMQPMessage(json_encode($payload, JSON_THROW_ON_ERROR), $properties);
     }
 
     /**
      * Block and wait for incoming messages until the channel closes.
      */
-    private function waitForMessages(): void
+    protected function waitForMessages(): void
     {
         while ($this->channel()->is_consuming()) {
             $this->channel()->wait();
@@ -393,7 +400,7 @@ class RabbitMQManager
      *   "orders.*"       → "orders._star_"
      *   "logs.#"         → "logs._hash_"
      */
-    private function toQueueName(string $bindingKey): string
+    protected function toQueueName(string $bindingKey): string
     {
         return str_replace(['*', '#'], ['_star_', '_hash_'], $bindingKey);
     }

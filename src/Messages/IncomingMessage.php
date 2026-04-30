@@ -7,13 +7,13 @@ use PhpAmqpLib\Message\AMQPMessage;
 /**
  * A received RabbitMQ message — wraps AMQPMessage with a clean API.
  */
-class IncomingMessage
+readonly class IncomingMessage
 {
-    private readonly array $decodedPayload;
+    private array $decodedPayload;
 
-    private readonly array $parsedHeaders;
+    private array $parsedHeaders;
 
-    public function __construct(private readonly AMQPMessage $amqpMessage)
+    public function __construct(private AMQPMessage $amqpMessage)
     {
         $this->decodedPayload = json_decode($amqpMessage->getBody(), true) ?? [];
         $this->parsedHeaders = $this->extractHeaders();
